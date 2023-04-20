@@ -1,3 +1,10 @@
+## [0.1.1-dev.1](https://github.com/revanced/revanced-manager/compare/v0.1.0...v0.1.1-dev.1) (2023-04-20)
+
+
+### Bug Fixes
+
+* update pubspec version ([109720c](https://github.com/revanced/revanced-manager/commit/109720c43bf794dbf4efe533a24221d0508cdfea))
+
 # [0.1.0](https://github.com/revanced/revanced-manager/compare/v0.0.57...v0.1.0) (2023-04-20)
 
 
