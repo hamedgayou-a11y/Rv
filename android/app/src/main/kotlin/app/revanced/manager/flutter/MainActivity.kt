@@ -11,9 +11,17 @@ import app.revanced.manager.flutter.utils.zip.ZipFile
 import app.revanced.manager.flutter.utils.zip.structures.ZipEntry
 import app.revanced.patcher.Patcher
 import app.revanced.patcher.PatcherOptions
+import app.revanced.patcher.annotation.Package
+import app.revanced.patcher.data.Context
 import app.revanced.patcher.extensions.PatchExtensions.compatiblePackages
+import app.revanced.patcher.extensions.PatchExtensions.dependencies
+import app.revanced.patcher.extensions.PatchExtensions.description
+import app.revanced.patcher.extensions.PatchExtensions.include
 import app.revanced.patcher.extensions.PatchExtensions.patchName
+import app.revanced.patcher.extensions.PatchExtensions.version
 import app.revanced.patcher.logging.Logger
+import app.revanced.patcher.patch.Patch
+import app.revanced.patcher.patch.ResourcePatch
 import app.revanced.patcher.util.patch.PatchBundle
 import dalvik.system.DexClassLoader
 import io.flutter.embedding.android.FlutterActivity
@@ -26,6 +34,7 @@ private const val INSTALLER_CHANNEL = "app.revanced.manager.flutter/installer"
 
 class MainActivity : FlutterActivity() {
     private val handler = Handler(Looper.getMainLooper())
+    private var patches = mutableListOf<Class<out Patch<Context>>>()
     private lateinit var installerChannel: MethodChannel
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
@@ -34,8 +43,39 @@ class MainActivity : FlutterActivity() {
         installerChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, INSTALLER_CHANNEL)
         mainChannel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "loadPatches" -> {
+                    val jarPatchBundlePath = call.argument<String>("jarPatchBundlePath")
+                    val cacheDirPath = call.argument<String>("cacheDirPath")
+                    if (jarPatchBundlePath != null && cacheDirPath != null) {
+                        loadPatches(result, jarPatchBundlePath, cacheDirPath)
+                    } else {
+                        result.notImplemented()
+                    }
+                }
+
+                "getCompatiblePackages" -> getCompatiblePackages(result)
+                "getFilteredPatches" -> {
+                    val targetPackage = call.argument<String>("targetPackage")
+                    val targetVersion = call.argument<String>("targetVersion")
+                    val ignoreVersion = call.argument<Boolean>("ignoreVersion")
+                    if (targetPackage != null && targetVersion != null && ignoreVersion != null) {
+                        getFilteredPatches(result, targetPackage, targetVersion, ignoreVersion)
+                    } else {
+                        result.notImplemented()
+                    }
+                }
+
+                "needsResourcePatching" -> {
+                    val selectedPatches = call.argument<List<String>>("selectedPatches")
+                    val packageName = call.argument<String>("packageName")
+                    if (selectedPatches != null && packageName != null) {
+                        needsResourcePatching(result, selectedPatches, packageName)
+                    } else {
+                        result.notImplemented()
+                    }
+                }
+
                 "runPatcher" -> {
-                    val patchBundleFilePath = call.argument<String>("patchBundleFilePath")
                     val originalFilePath = call.argument<String>("originalFilePath")
                     val inputFilePath = call.argument<String>("inputFilePath")
                     val patchedFilePath = call.argument<String>("patchedFilePath")
@@ -46,8 +86,7 @@ class MainActivity : FlutterActivity() {
                     val keyStoreFilePath = call.argument<String>("keyStoreFilePath")
                     val keystorePassword = call.argument<String>("keystorePassword")
 
-                    if (patchBundleFilePath != null &&
-                        originalFilePath != null &&
+                    if (originalFilePath != null &&
                         inputFilePath != null &&
                         patchedFilePath != null &&
                         outFilePath != null &&
@@ -59,7 +98,6 @@ class MainActivity : FlutterActivity() {
                     ) {
                         runPatcher(
                             result,
-                            patchBundleFilePath,
                             originalFilePath,
                             inputFilePath,
                             patchedFilePath,
@@ -74,14 +112,114 @@ class MainActivity : FlutterActivity() {
                         result.notImplemented()
                     }
                 }
+
                 else -> result.notImplemented()
             }
         }
     }
 
+    fun loadPatches(
+        result: MethodChannel.Result,
+        jarPatchBundlePath: String,
+        cacheDirPath: String
+    ) {
+        Thread(
+            Runnable {
+                patches.addAll(
+                    PatchBundle.Dex(
+                        jarPatchBundlePath,
+                        DexClassLoader(
+                            jarPatchBundlePath,
+                            cacheDirPath,
+                            null,
+                            javaClass.classLoader
+                        )
+                    ).loadPatches()
+                )
+                handler.post { result.success(null) }
+            }
+        )
+            .start()
+    }
+
+    fun getCompatiblePackages(result: MethodChannel.Result) {
+        Thread(
+            Runnable {
+                val filteredPackages = mutableListOf<String>()
+                patches.forEach patch@{ patch ->
+                    patch.compatiblePackages?.forEach { pkg ->
+                        filteredPackages.add(pkg.name)
+                    }
+                }
+                handler.post { result.success(filteredPackages.distinct()) }
+            }
+        )
+            .start()
+    }
+
+    fun needsResourcePatching(
+        result: MethodChannel.Result,
+        selectedPatches: List<String>,
+        packageName: String
+    ) {
+        Thread(
+            Runnable {
+                fun Class<out Patch<Context>>.anyRecursively(predicate: (Class<out Patch<Context>>) -> Boolean): Boolean =
+                    predicate(this) || dependencies?.any { it.java.anyRecursively(predicate) } == true
+
+                var hasResourcePatch = false
+                val filteredPatches = recoverPatchesList(selectedPatches, packageName)
+                for (patch in filteredPatches) {
+                    if (patch.anyRecursively { ResourcePatch::class.java.isAssignableFrom(it) }) {
+                        hasResourcePatch = true
+                        break
+                    }
+                }
+
+                handler.post { result.success(hasResourcePatch) }
+            }
+        )
+            .start()
+    }
+
+    fun getFilteredPatches(
+        result: MethodChannel.Result,
+        targetPackage: String,
+        targetVersion: String,
+        ignoreVersion: Boolean
+    ) {
+        Thread(
+            Runnable {
+                val filteredPatches = mutableListOf<Map<String, Any?>>()
+                patches.forEach patch@{ patch ->
+                    patch.compatiblePackages?.forEach { pkg ->
+                        if (pkg.name == targetPackage &&
+                            (ignoreVersion ||
+                                    pkg.versions.isNotEmpty() ||
+                                    pkg.versions.contains(targetVersion))
+                        ) {
+                            var p = mutableMapOf<String, Any?>()
+                            p.put("name", patch.patchName)
+                            p.put("version", patch.version)
+                            p.put("description", patch.description)
+                            p.put("include", patch.include)
+                            filteredPatches.add(p)
+                        }
+                    }
+                }
+                handler.post { result.success(filteredPatches) }
+            }
+        )
+            .start()
+    }
+
+    private fun recoverPatchesList(selectedPatches: List<String>, packageName: String) = patches.filter { patch ->
+        (patch.compatiblePackages?.any { it.name == packageName } == true || patch.compatiblePackages.isNullOrEmpty()) &&
+                selectedPatches.any { it == patch.patchName }
+    }
+
     private fun runPatcher(
         result: MethodChannel.Result,
-        patchBundleFilePath: String,
         originalFilePath: String,
         inputFilePath: String,
         patchedFilePath: String,
@@ -163,23 +301,7 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
-                val patches = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CUPCAKE) {
-                    PatchBundle.Dex(
-                        patchBundleFilePath,
-                        DexClassLoader(
-                            patchBundleFilePath,
-                            cacheDirPath,
-                            null,
-                            javaClass.classLoader
-                        )
-                    ).loadPatches().filter { patch ->
-                        (patch.compatiblePackages?.any { it.name == patcher.context.packageMetadata.packageName } == true || patch.compatiblePackages.isNullOrEmpty()) &&
-                                selectedPatches.any { it == patch.patchName }
-                    }
-                } else {
-                    TODO("VERSION.SDK_INT < CUPCAKE")
-                }
-                patcher.addPatches(patches)
+                patcher.addPatches(recoverPatchesList(selectedPatches, patcher.context.packageMetadata.packageName))
                 patcher.executePatches().forEach { (patch, res) ->
                     if (res.isSuccess) {
                         val msg = "Applied $patch"
@@ -195,7 +317,8 @@ class MainActivity : FlutterActivity() {
                         }
                         return@forEach
                     }
-                    val msg = "Failed to apply $patch: " + "${res.exceptionOrNull()!!.message ?: res.exceptionOrNull()!!.cause!!::class.simpleName}"
+                    val msg =
+                        "Failed to apply $patch: " + "${res.exceptionOrNull()!!.message ?: res.exceptionOrNull()!!.cause!!::class.simpleName}"
                     handler.post {
                         installerChannel.invokeMethod(
                             "update",

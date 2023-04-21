@@ -24,12 +24,10 @@ class PatcherAPI {
   late Directory _dataDir;
   late Directory _tmpDir;
   late File _keyStoreFile;
-  List<Patch> _patches = [];
-  Map filteredPatches = <String, List<Patch>>{};
+  File? _jarPatchBundleFile;
   File? _outFile;
 
   Future<void> initialize() async {
-    await _loadPatches();
     final Directory appCache = await getTemporaryDirectory();
     _dataDir = await getExternalStorageDirectory() ?? appCache;
     _tmpDir = Directory('${appCache.path}/patcher');
@@ -43,105 +41,142 @@ class PatcherAPI {
     }
   }
 
-  Future<void> _loadPatches() async {
-    try {
-      if (_patches.isEmpty) {
-        _patches = await _managerAPI.getPatches();
-      }
-    } on Exception catch (e) {
-      if (kDebugMode) {
-        print(e);
-      }
-      _patches = List.empty();
-    }
-  }
-
-  Future<List<ApplicationWithIcon>> getFilteredInstalledApps(
-    bool showUniversalPatches,
-  ) async {
-    final List<ApplicationWithIcon> filteredApps = [];
-    final bool allAppsIncluded =
-        _patches.any((patch) => patch.compatiblePackages.isEmpty) &&
-            showUniversalPatches;
-    if (allAppsIncluded) {
-      final allPackages = await DeviceApps.getInstalledApplications(
-        includeAppIcons: true,
-        onlyAppsWithLaunchIntent: true,
-      );
-      for (final pkg in allPackages) {
-        if (!filteredApps.any((app) => app.packageName == pkg.packageName)) {
-          final appInfo = await DeviceApps.getApp(
-            pkg.packageName,
-            true,
-          ) as ApplicationWithIcon?;
-          if (appInfo != null) {
-            filteredApps.add(appInfo);
-          }
+  Future<bool> loadPatches() async {
+    if (_jarPatchBundleFile == null) {
+      _jarPatchBundleFile = await _managerAPI.downloadPatches();
+      if (_jarPatchBundleFile != null) {
+        try {
+          await patcherChannel.invokeMethod<bool>(
+            'loadPatches',
+            {
+              'jarPatchBundlePath': _jarPatchBundleFile!.path,
+              'cacheDirPath': _tmpDir!.path,
+            },
+          );
+        } on Exception {
+          return false;
         }
       }
     }
-    for (final Patch patch in _patches) {
-      for (final Package package in patch.compatiblePackages) {
-        try {
-          if (!filteredApps.any((app) => app.packageName == package.name)) {
-            final ApplicationWithIcon? app = await DeviceApps.getApp(
-              package.name,
-              true,
-            ) as ApplicationWithIcon?;
-            if (app != null) {
-              filteredApps.add(app);
+    return _jarPatchBundleFile != null;
+  }
+
+  Future<List<ApplicationWithIcon>> getFilteredInstalledApps() async {
+    List<ApplicationWithIcon> filteredPackages = [];
+    bool isLoaded = await loadPatches();
+    if (isLoaded) {
+      try {
+        List<String>? patchesPackages = await patcherChannel
+            .invokeListMethod<String>('getCompatiblePackages');
+        if (patchesPackages != null) {
+          for (String package in patchesPackages) {
+            try {
+              ApplicationWithIcon? app = await DeviceApps.getApp(package, true)
+              as ApplicationWithIcon?;
+              if (app != null) {
+                filteredPackages.add(app);
+              }
+            } catch (e) {
+              continue;
             }
           }
-        } on Exception catch (e) {
-          if (kDebugMode) {
-            print(e);
+        }
+      } on Exception {
+        return List.empty();
+      }
+    }
+    return filteredPackages;
+  }
+
+  Future<List<Patch>> getFilteredPatches(
+      PatchedApplication? selectedApp,
+      ) async {
+    List<Patch> filteredPatches = [];
+    if (selectedApp != null) {
+      bool isLoaded = await loadPatches();
+      if (isLoaded) {
+        try {
+          var patches =
+          await patcherChannel.invokeListMethod<Map<dynamic, dynamic>>(
+            'getFilteredPatches',
+            {
+              'targetPackage': selectedApp.packageName,
+              'targetVersion': selectedApp.version,
+              'ignoreVersion': true,
+            },
+          );
+          if (patches != null) {
+            for (var patch in patches) {
+              if (!filteredPatches
+                  .any((element) => element.name == patch['name'])) {
+                filteredPatches.add(
+                  Patch(
+                    name: patch['name'],
+                    version: patch['version'] ?? '?.?.?',
+                    description: patch['description'] ?? 'N/A',
+                    include: patch['include'] ?? true,
+                  ),
+                );
+              }
+            }
           }
+        } on Exception {
+          return List.empty();
         }
       }
     }
-    return filteredApps;
-  }
-
-  List<Patch> getFilteredPatches(String packageName) {
-    if (!filteredPatches.keys.contains(packageName)) {
-      final List<Patch> patches = _patches
-          .where(
-            (patch) =>
-                patch.compatiblePackages.isEmpty ||
-                !patch.name.contains('settings') &&
-                    patch.compatiblePackages
-                        .any((pack) => pack.name == packageName),
-          )
-          .toList();
-      filteredPatches[packageName] = patches;
-    }
-    return filteredPatches[packageName];
+    return filteredPatches;
   }
 
   Future<List<Patch>> getAppliedPatches(
-    List<String> appliedPatches,
-  ) async {
-    return _patches
-        .where((patch) => appliedPatches.contains(patch.name))
-        .toList();
+      PatchedApplication? selectedApp,
+      ) async {
+    List<Patch> appliedPatches = [];
+    if (selectedApp != null) {
+      bool isLoaded = await loadPatches();
+      if (isLoaded) {
+        try {
+          var patches =
+          await patcherChannel.invokeListMethod<Map<dynamic, dynamic>>(
+            'getFilteredPatches',
+            {
+              'targetPackage': selectedApp.packageName,
+              'targetVersion': selectedApp.version,
+              'ignoreVersion': true,
+            },
+          );
+          if (patches != null) {
+            for (var patch in patches) {
+              if (selectedApp.appliedPatches.contains(patch['name'])) {
+                appliedPatches.add(
+                  Patch(
+                    name: patch['name'],
+                    version: patch['version'] ?? '?.?.?',
+                    description: patch['description'] ?? 'N/A',
+                    include: patch['include'] ?? true,
+                  ),
+                );
+              }
+            }
+          }
+        } on Exception {
+          return List.empty();
+        }
+      }
+    }
+    return appliedPatches;
   }
 
   Future<bool> needsResourcePatching(
-    List<Patch> selectedPatches,
+    List<Patch> selectedPatches, String packageName
   ) async {
-    return selectedPatches.any(
-      (patch) => patch.dependencies.any(
-        (dep) => dep.contains('resource-'),
-      ),
-    );
-  }
-
-  Future<bool> needsSettingsPatch(List<Patch> selectedPatches) async {
-    return selectedPatches.any(
-      (patch) => patch.dependencies.any(
-        (dep) => dep.contains('settings'),
-      ),
-    );
+    return await patcherChannel.invokeMethod<bool>(
+      'needsResourcePatching',
+      {
+        'selectedPatches': selectedPatches.map((e) => e.name),
+        'packageName': packageName
+      },
+    ) ?? false;
   }
 
   Future<String> getOriginalFilePath(
@@ -170,23 +205,6 @@ class PatcherAPI {
     String originalFilePath,
     List<Patch> selectedPatches,
   ) async {
-    final bool includeSettings = await needsSettingsPatch(selectedPatches);
-    if (includeSettings) {
-      try {
-        final Patch? settingsPatch = _patches.firstWhereOrNull(
-          (patch) =>
-              patch.name.contains('settings') &&
-              patch.compatiblePackages.any((pack) => pack.name == packageName),
-        );
-        if (settingsPatch != null) {
-          selectedPatches.add(settingsPatch);
-        }
-      } on Exception catch (e) {
-        if (kDebugMode) {
-          print(e);
-        }
-      }
-    }
     final File? patchBundleFile = await _managerAPI.downloadPatches();
     final File? integrationsFile = await _managerAPI.downloadIntegrations();
     if (patchBundleFile != null) {

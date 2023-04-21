@@ -9,8 +9,7 @@ class Patch {
     required this.name,
     required this.description,
     required this.version,
-    required this.excluded,
-    required this.dependencies,
+    required this.include,
     required this.compatiblePackages,
   });
 
@@ -18,8 +17,7 @@ class Patch {
   final String name;
   final String description;
   final String version;
-  final bool excluded;
-  final List<String> dependencies;
+  final bool include;
   final List<Package> compatiblePackages;
 
   Map<String, dynamic> toJson() => _$PatchToJson(this);

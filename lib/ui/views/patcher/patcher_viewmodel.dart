@@ -43,12 +43,13 @@ class PatcherViewModel extends BaseViewModel {
   }
 
   Future<bool> isValidPatchConfig() async {
-    final bool needsResourcePatching = await _patcherAPI.needsResourcePatching(
-      selectedPatches,
-    );
-    if (needsResourcePatching && selectedApp != null) {
+    if (selectedApp != null) {
+      final bool needsResourcePatching = await _patcherAPI.needsResourcePatching(
+          selectedPatches,
+          selectedApp!.packageName
+      );
       final bool isSplit = await _managerAPI.isSplitApk(selectedApp!);
-      return !isSplit;
+      return !(isSplit && needsResourcePatching);
     }
     return true;
   }
