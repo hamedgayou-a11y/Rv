@@ -15,14 +15,18 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven {
-            url = uri("https://maven.pkg.github.com/revanced/revanced-patcher")
-            credentials {
-                username = (project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")) as String
-                password = (project.findProperty("gpr.key") ?: System.getenv("GITHUB_TOKEN")) as String
+        if (System.getenv("local")?.equals("true", ignoreCase = true) ?: false) {
+            println("Fetching from mavenLocal, unset your `local` variable if you want to use GitHub packages")
+            mavenLocal()
+        } else {
+            maven {
+                url = uri("https://maven.pkg.github.com/revanced/revanced-patcher")
+                credentials {
+                    username = (project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")) as String
+                    password = (project.findProperty("gpr.key") ?: System.getenv("GITHUB_TOKEN")) as String
+                }
             }
         }
-        mavenLocal()
     }
 }
 
