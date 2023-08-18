@@ -15,7 +15,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        if (System.getenv("local")?.equals("true", ignoreCase = true) ?: false) {
+        if (System.getenv("local")?.equalsIgnoreCase("true") ?: false) {
             println("Fetching from mavenLocal, unset your `local` variable if you want to use GitHub packages")
             mavenLocal()
         } else {
