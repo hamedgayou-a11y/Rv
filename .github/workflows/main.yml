@@ -1,9 +1,9 @@
-name: PR Build
+name: main
 
 on:
   pull_request:
     paths: 
-      - ".github/workflows/pr-build.yml"
+      - ".github/workflows/main.yml"
       - "android/**"
       - "assets/**"
       - "lib/**"
